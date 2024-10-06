@@ -1,15 +1,15 @@
-from pandas import json_normalize
+from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 import requests
-import json
 import time
 import random
 import pandas as pd
-from lxml import html
+import html
+from bs4 import BeautifulSoup
 
 
 def save_session(context):
-    storage = context.storage_state(path="session.json")
+    context.storage_state(path="session.json")
 
 
 def load_session(browser):
@@ -61,7 +61,6 @@ def get_error_emails():
 
 
 def error_email_password(email):
-    get_sheet()
     df = pd.read_csv('accounts.csv')
     matching_row = df[df['email'] == email]
     if not matching_row.empty:
@@ -74,47 +73,82 @@ def error_email_password(email):
         return None
 
 
-def get_authorization_email(page, xpath, to_find):
+def get_authorization_email(page, to_find):
     page.bring_to_front()
-    while True:
+    attempts = 0
+    while attempts <= 1:
         page.locator('//span[text()="Primary"]').click()
-        random_delay(5, 10)
+        random_delay(8, 10)
         page.locator('//span[text()="Others"]').click()
         random_delay()
-        first_email = page.locator('//li[contains(@class,"MuiListItem-root")]').first.inner_html()
-        tree = html.fromstring(first_email)
-        microsoft_email = tree.xpath(xpath)
-        if microsoft_email is not None:
-            break
-    page.locator('//p[text()="account-security-noreply@accountprotection.microsoft.com"]').first.click()
-    random_delay()
-    text = page.locator().text_content(to_find)
-    if text is not None:
-        return text
+        try:
+            page.locator('//p[text()="account-security-noreply@accountprotection.microsoft.com"]').first.click()
+            random_delay()
+            email_time = page.locator('//div[@class="text-right"]/p').text_content().strip()
+            if email_time:
+                extracted_time = datetime.strptime(email_time, "%A, %b %d, %Y at %I:%M %p")
+                local_timezone = datetime.now().astimezone().tzinfo
+                extracted_time = extracted_time.replace(tzinfo=local_timezone)
+                extracted_time_utc = extracted_time.astimezone(timezone.utc)
+                current_time_utc = datetime.now(timezone.utc)
+                if str(extracted_time_utc.strftime('%H:%M')) == str(current_time_utc.strftime('%H:%M')) or abs(
+                        (current_time_utc - extracted_time_utc).total_seconds()) <= 130:
+                    try:
+                        if to_find == '//td[@id="i4"]/span':
+                            inner_html = page.inner_html('//div[@class="rounded mt-4"]')
+                            unescaped_html = html.unescape(inner_html)
+                            soup = BeautifulSoup(unescaped_html, 'html.parser')
+                            return soup.find('span').text
+                        return page.locator(to_find).text_content()
+                    except:
+                        attempts += 1
+                else:
+                    attempts += 1
+            else:
+                attempts += 1
+        except:
+            attempts += 1
     return None
+
+
+def microsoft_verification():
+    pass
 
 
 def get_number():
     number_response = requests.get(
-        'https://api.sms-man.com/control/get-number?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&country_id=49206&application_id=2437315')
+        'https://api.sms-man.com/control/get-number?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&country_id=5&application_id=133')
     if number_response.status_code == 200:
         return number_response.json()['request_id'], number_response.json()['number']
 
 
 def get_sms(request_id):
-    sms_response = requests.get(f'https://api.sms-man.com/control/get-sms?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&request_id={request_id}')
-    try:
-        number_verification_code = sms_response.json()['sms_code']
-        return number_verification_code
-    except:
-        get_sms(request_id)
+    attempts = 0
+    while attempts < 2:
+        time.sleep(20)
+        sms_response = requests.get(
+            f'https://api.sms-man.com/control/get-sms?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&request_id={request_id}')
+        try:
+            number_verification_code = sms_response.json()['sms_code']
+            return number_verification_code
+        except KeyError:
+            attempts += 1
+    requests.get(
+        f'https://api.sms-man.com/control/set-status?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&request_id={request_id}&status=reject')
+    return None
 
 
-def update_sheet(email, new_status):
+def update_sheet(email):
     df = pd.read_csv('accounts.csv')
     if email in df['email'].values:
         df.loc[df['email'] == email, 'status'] = new_status
         df.to_csv('accounts.csv', index=False)
+
+
+def get_status(email):
+    url = f"https://api.instantly.ai/api/v1/account/status?api_key=6kfpm446cgmqdrm60x0xxmmbk719&email={email}"
+    response = requests.request("GET", url)
+    return response.json()['status']
 
 
 def main():
@@ -137,8 +171,12 @@ def main():
 
         random_delay()
         for each_account in get_error_emails():
-            page.locator('//input[@placeholder="Search..."]').type(each_account['email'])
-            random_delay(5, 10)
+            try:
+                page.locator('//input[@placeholder="Search..."]').type(each_account['email'])
+                random_delay(5, 10)
+            except:
+                page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                continue
             page.locator('//button[contains(@class, "css-1yxmbwk")]').click()
             random_delay(2, 5)
             page.locator('//span[text()="Reconnect account"]').click()
@@ -147,7 +185,7 @@ def main():
             div.locator('//p[text()="Microsoft"]').click()
             random_delay()
             page.locator('//button[text()="Yes, SMTP has been enabled"]').click()
-            random_delay()
+            random_delay(5, 10)
             page.locator('//h6[text()="Back"]').click()
             microsoft_page = context.pages[1]
             random_delay()
@@ -156,31 +194,40 @@ def main():
             random_delay()
             microsoft_page.locator('//input[@value="Next"]').click()
             random_delay()
-            try:
-                microsoft_page.locator('//input[@type="password"]').type(error_email_password(each_account['email']))
-                random_delay()
-                microsoft_page.locator('//button[text()="Sign in"]').click()
-                random_delay()
-                microsoft_page.locator('//input[@name="proof"]').click()
+            if microsoft_page.wait_for_selector('//span[text()="Use your password instead"]', timeout=3000):
+                microsoft_page.locator('//span[text()="Use your password instead"]').click()
+            microsoft_page.locator('//input[@type="password"]').type(
+                error_email_password(each_account['email']))
+            random_delay()
+            microsoft_page.locator('//button[text()="Sign in"]').click()
+            random_delay()
+            if microsoft_page.wait_for_selector('//input[@id="iProof0"]', timeout=3000):
+                microsoft_page.locator('//input[@id="iProof0"]').click()
                 random_delay()
                 page.locator('//button[@id="sidebar_icon_unibox"]').click()
                 random_delay()
-                recovery_email = get_authorization_email(page,
-                                                         '//p[text()="account-security-noreply@accountprotection.microsoft.com"]',
-                                                         '//span[contains(text(),"@outlook.com")]')
+                recovery_email = get_authorization_email(page, '//span[contains(text(),"@outlook.com")]')
+                if recovery_email is None:
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    random_delay()
+                    continue
                 random_delay()
+                microsoft_page.bring_to_front()
                 microsoft_page.locator('//input[@type="email"]').type(recovery_email)
                 random_delay()
                 microsoft_page.locator('//input[@value="Send code"]').click()
                 random_delay()
-                code = get_authorization_email(page,
-                                               '//p[text()="account-security-noreply@accountprotection.microsoft.com"]',
-                                               '//td[contains(text(),"Security code:")]/span')
-                microsoft_page.locator('//input[@name="iOttText"]').type()
+                code = get_authorization_email(page, '//td[@id="i4"]/span')
+                if code is None:
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    random_delay()
+                    continue
+                microsoft_page.bring_to_front()
+                microsoft_page.locator('//input[@id="iOttText"]').type(code)
                 random_delay()
                 microsoft_page.locator('//input[@value="Next"]').click()
-                random_delay()
-            except:
                 microsoft_page.locator('//button[text()="Next"]').click()
                 random_delay()
                 dropdown = microsoft_page.locator('//select[@id="phoneCountry"]')
@@ -188,14 +235,116 @@ def main():
                 dropdown.select_option(value="ID")
                 random_delay()
                 responses = get_number()
-                microsoft_page.locator('//input[@name="proofField"]').type(responses[0])
+                microsoft_page.locator('//input[@name="proofField"]').type(f"{responses[1][2:]}")
                 random_delay()
                 microsoft_page.locator('//button[text()="Next"]').click()
                 random_delay()
-                requests.get(f'https://api.sms-man.com/control/set-status?token=nB7QCK0NGGVvjajfGyI9iRbmeRRsgm1A&request_id={responses[1]}&status=close')
-                save_session(context)
-            browser.close()
+                if microsoft_page.locator('//div[@id="SmsBlockTitle"]'):
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    continue
+                verification_code = get_sms(responses[0])
+                if verification_code is None:
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    random_delay()
+                    continue
+                microsoft_page.locator('//input[@id="enter-code-input"]').type(verification_code)
+                microsoft_page.locator('//button[@id="nextButton"]').click()
+                if microsoft_page.locator('//div[text()="Something went wrong."]'):
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    continue
+                # Exception Handled Again Email Verification
+                if microsoft_page.wait_for_selector('//input[@id="iProof0"]', timeout=3000):
+                    microsoft_page.locator('//input[@id="iProof0"]').click()
+                    random_delay()
+                    page.locator('//button[@id="sidebar_icon_unibox"]').click()
+                    random_delay()
+                    recovery_email = get_authorization_email(page, '//span[contains(text(),"@outlook.com")]')
+                    if recovery_email is None:
+                        microsoft_page.close()
+                        page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                        random_delay()
+                        continue
+                    random_delay()
+                    microsoft_page.bring_to_front()
+                    microsoft_page.locator('//input[@type="email"]').type(recovery_email)
+                    random_delay()
+                    microsoft_page.locator('//input[@value="Send code"]').click()
+                    random_delay()
+                    code = get_authorization_email(page, '//td[@id="i4"]/span')
+                    if code is None:
+                        microsoft_page.close()
+                        page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                        random_delay()
+                        continue
+                    microsoft_page.bring_to_front()
+                    microsoft_page.locator('//input[@id="iOttText"]').type(code)
+                    random_delay()
+                    microsoft_page.locator('//input[@value="Next"]').click()
+                    microsoft_page.locator('//button[text()="Next"]').click()
+                    random_delay()
+                    dropdown = microsoft_page.locator('//select[@id="phoneCountry"]')
+                    dropdown.click()
+                    dropdown.select_option(value="ID")
+                    random_delay()
+                    responses = get_number()
+                    microsoft_page.locator('//input[@name="proofField"]').type(f"{responses[1][2:]}")
+                    random_delay()
+                    microsoft_page.locator('//button[text()="Next"]').click()
+                    random_delay()
+                    if microsoft_page.locator('//div[@id="SmsBlockTitle"]'):
+                        microsoft_page.close()
+                        page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                        continue
+                    verification_code = get_sms(responses[0])
+                    if verification_code is None:
+                        microsoft_page.close()
+                        page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                        random_delay()
+                        continue
+                    microsoft_page.locator('//input[@id="enter-code-input"]').type(verification_code)
+                    microsoft_page.locator('//button[@id="nextButton"]').click()
+                    if microsoft_page.locator('//div[text()="Something went wrong."]'):
+                        microsoft_page.close()
+                        page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                        continue
+            else:
+                microsoft_page.locator('//button[text()="Next"]').click()
+                random_delay()
+                dropdown = microsoft_page.locator('//select[@id="phoneCountry"]')
+                dropdown.click()
+                dropdown.select_option(value="ID")
+                random_delay()
+                responses = get_number()
+                microsoft_page.locator('//input[@name="proofField"]').type(f"{responses[1][2:]}")
+                random_delay()
+                microsoft_page.locator('//button[text()="Next"]').click()
+                random_delay()
+                if microsoft_page.locator('//div[@id="SmsBlockTitle"]'):
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    continue
+                verification_code = get_sms(responses[0])
+                if verification_code is None:
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    random_delay()
+                    continue
+                microsoft_page.locator('//input[@id="enter-code-input"]').type(verification_code)
+                microsoft_page.locator('//button[@id="nextButton"]').click()
+                if microsoft_page.locator('//div[text()="Something went wrong."]'):
+                    microsoft_page.close()
+                    page.locator('//button[@id="sidebar_icon_accounts"]').click()
+                    continue
+            update_sheet(each_account['email'])
+        save_session(context)
+        browser.close()
 
 
 if __name__ == '__main__':
-    get_accounts_from_instantly()
+    main()
+
+
+

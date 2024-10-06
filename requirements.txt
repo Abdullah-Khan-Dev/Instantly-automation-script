@@ -1,4 +1,8 @@
-lxml==5.1.0
+beautifulsoup4==4.12.3
 pandas==2.2.1
 requests==2.31.0
-
+time
+random
+html
+datetime
+playwright.sync_api
